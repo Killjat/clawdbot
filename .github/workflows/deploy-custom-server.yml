@@ -75,8 +75,10 @@ jobs:
           else
             VERSION="main-$(git rev-parse --short HEAD)"
           fi
+          # Convert repository name to lowercase for Docker registry
+          IMAGE_NAME_LOWER=$(echo "${{ env.IMAGE_NAME }}" | tr '[:upper:]' '[:lower:]')
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "image-tag=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:$VERSION" >> $GITHUB_OUTPUT
+          echo "image-tag=${{ env.REGISTRY }}/$IMAGE_NAME_LOWER:$VERSION" >> $GITHUB_OUTPUT
 
       - name: Build Docker image
         uses: docker/build-push-action@v6

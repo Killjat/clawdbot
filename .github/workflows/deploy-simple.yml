@@ -33,11 +33,14 @@ jobs:
 
       - name: Build Docker image
         run: |
-          docker build -t moltbot:latest .
+          # Convert repository name to lowercase for Docker registry
+          REPO_NAME_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          docker build -t ${REPO_NAME_LOWER}:latest .
 
       - name: Save Docker image
         run: |
-          docker save moltbot:latest | gzip > moltbot-image.tar.gz
+          REPO_NAME_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          docker save ${REPO_NAME_LOWER}:latest | gzip > moltbot-image.tar.gz
 
       - name: Deploy to server
         uses: appleboy/ssh-action@v1.0.3
@@ -94,6 +97,10 @@ jobs:
             
             # 启动新容器
             echo "启动新容器..."
+            # Get the image name (should be lowercase)
+            IMAGE_NAME=$(docker images --format "table {{.Repository}}:{{.Tag}}" | grep -v REPOSITORY | head -1)
+            echo "使用镜像: $IMAGE_NAME"
+            
             docker run -d \
               --name moltbot \
               --restart unless-stopped \
@@ -103,7 +110,7 @@ jobs:
               -e CLAWDBOT_GATEWAY_TOKEN="${{ secrets.PRODUCTION_GATEWAY_TOKEN }}" \
               -e DEEPSEEK_API_KEY="${{ secrets.PRODUCTION_DEEPSEEK_API_KEY }}" \
               -e CLAWDBOT_VERSION="$(date +%Y%m%d-%H%M%S)" \
-              moltbot:latest
+              $IMAGE_NAME
             
             # 等待启动
             echo "等待应用启动..."
