@@ -1,0 +1,204 @@
+name: Direct Deploy (No Docker)
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - staging
+          - development
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+
+      - name: Setup pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.23.0 --activate
+
+      - name: Install and build
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Prepare deployment package
+        run: |
+          # 创建部署包
+          mkdir -p deploy-package
+          
+          # 复制必要文件
+          cp -r dist/ deploy-package/
+          cp package.json deploy-package/
+          cp pnpm-lock.yaml deploy-package/
+          cp -r scripts/ deploy-package/
+          
+          # 复制配置模板
+          cp config-template.json deploy-package/
+          
+          # 创建部署脚本
+          cat > deploy-package/deploy.sh << 'EOF'
+          #!/bin/bash
+          set -euo pipefail
+          
+          echo "🚀 开始部署 Moltbot"
+          
+          # 1. 安装 Node.js 依赖（仅生产依赖）
+          echo "安装依赖..."
+          pnpm install --prod --frozen-lockfile
+          
+          # 2. 生成配置文件
+          echo "生成配置文件..."
+          chmod +x scripts/generate-config.sh
+          ./scripts/generate-config.sh
+          
+          # 3. 停止现有服务
+          echo "停止现有服务..."
+          pkill -f "moltbot" || true
+          
+          # 4. 启动新服务
+          echo "启动服务..."
+          nohup node dist/index.js gateway run --bind lan --port 18789 > moltbot.log 2>&1 &
+          
+          # 5. 等待启动
+          echo "等待服务启动..."
+          sleep 10
+          
+          # 6. 健康检查
+          echo "执行健康检查..."
+          for i in {1..5}; do
+            if curl -f http://localhost:18789/health; then
+              echo "✅ 部署成功！"
+              echo "服务已启动，PID: $(pgrep -f 'node dist/index.js')"
+              exit 0
+            else
+              echo "健康检查失败，重试 $i/5..."
+              sleep 5
+            fi
+          done
+          
+          echo "❌ 部署失败"
+          echo "查看日志:"
+          tail -20 moltbot.log
+          exit 1
+          EOF
+          
+          chmod +x deploy-package/deploy.sh
+          
+          # 打包
+          tar -czf moltbot-deploy.tar.gz -C deploy-package .
+
+      - name: Upload to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          password: ${{ secrets.SERVER_PASSWORD }}
+          port: ${{ secrets.SERVER_PORT || 22 }}
+          source: "moltbot-deploy.tar.gz"
+          target: "/tmp/"
+
+      - name: Deploy on server
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          password: ${{ secrets.SERVER_PASSWORD }}
+          port: ${{ secrets.SERVER_PORT || 22 }}
+          envs: DEEPSEEK_API_KEY,GATEWAY_TOKEN,GATEWAY_HOST,GATEWAY_PORT,TLS_ENABLED,LOG_LEVEL
+          script: |
+            # 设置环境变量
+            export DEEPSEEK_API_KEY="${{ secrets.PRODUCTION_DEEPSEEK_API_KEY }}"
+            export GATEWAY_TOKEN="${{ secrets.PRODUCTION_GATEWAY_TOKEN }}"
+            export GATEWAY_HOST="0.0.0.0"
+            export GATEWAY_PORT="18789"
+            export TLS_ENABLED="true"
+            export LOG_LEVEL="info"
+            export NODE_ENV="production"
+            
+            # 创建应用目录
+            mkdir -p ~/moltbot-app
+            cd ~/moltbot-app
+            
+            # 解压部署包
+            tar -xzf /tmp/moltbot-deploy.tar.gz
+            
+            # 安装 Node.js 和 pnpm（如果未安装）
+            if ! command -v node &> /dev/null; then
+              echo "安装 Node.js..."
+              curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+              sudo apt-get install -y nodejs
+            fi
+            
+            if ! command -v pnpm &> /dev/null; then
+              echo "安装 pnpm..."
+              corepack enable
+              corepack prepare pnpm@10.23.0 --activate
+            fi
+            
+            # 执行部署
+            ./deploy.sh
+            
+            # 清理
+            rm -f /tmp/moltbot-deploy.tar.gz
+
+      - name: Verify deployment
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          password: ${{ secrets.SERVER_PASSWORD }}
+          port: ${{ secrets.SERVER_PORT || 22 }}
+          script: |
+            echo "=== 部署验证 ==="
+            
+            # 检查进程
+            if pgrep -f "node dist/index.js" > /dev/null; then
+              echo "✅ Moltbot 进程运行中"
+              echo "PID: $(pgrep -f 'node dist/index.js')"
+            else
+              echo "❌ Moltbot 进程未运行"
+              exit 1
+            fi
+            
+            # 检查端口
+            if netstat -tlnp | grep :18789 > /dev/null; then
+              echo "✅ 端口 18789 已监听"
+            else
+              echo "❌ 端口 18789 未监听"
+              exit 1
+            fi
+            
+            # 健康检查
+            if curl -f http://localhost:18789/health; then
+              echo "✅ 健康检查通过"
+            else
+              echo "❌ 健康检查失败"
+              exit 1
+            fi
+            
+            echo ""
+            echo "🎉 部署验证成功！"
+            echo "访问地址: http://${{ secrets.SERVER_HOST }}:18789"
+
+      - name: Deployment Summary
+        run: |
+          echo "## 🚀 部署完成" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**环境**: ${{ github.event.inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "**部署时间**: $(date)" >> $GITHUB_STEP_SUMMARY
+          echo "**访问地址**: http://${{ secrets.SERVER_HOST }}:18789" >> $GITHUB_STEP_SUMMARY
+          echo "**健康检查**: http://${{ secrets.SERVER_HOST }}:18789/health" >> $GITHUB_STEP_SUMMARY

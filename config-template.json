@@ -1,0 +1,40 @@
+{
+  "providers": {
+    "deepseek": {
+      "apiKey": "${DEEPSEEK_API_KEY}",
+      "api": "openai-completions",
+      "baseUrl": "https://api.deepseek.com/v1"
+    }
+  },
+  "brain": "deepseek/deepseek-chat",
+  "gateway": {
+    "mode": "local",
+    "host": "${GATEWAY_HOST:-0.0.0.0}",
+    "port": "${GATEWAY_PORT:-18789}",
+    "tls": {
+      "enabled": "${TLS_ENABLED:-true}",
+      "autoGenerate": "${TLS_AUTO_GENERATE:-true}"
+    },
+    "auth": {
+      "mode": "token",
+      "token": "${GATEWAY_TOKEN}"
+    },
+    "controlUi": {
+      "allowInsecureAuth": "${ALLOW_INSECURE_AUTH:-true}"
+    },
+    "cors": {
+      "origins": ["*"]
+    }
+  },
+  "web": {
+    "enabled": true,
+    "host": "${WEB_HOST:-0.0.0.0}",
+    "port": "${WEB_PORT:-18789}"
+  },
+  "logging": {
+    "level": "${LOG_LEVEL:-info}"
+  },
+  "security": {
+    "allowedOrigins": ["*"]
+  }
+}
