@@ -1,0 +1,149 @@
+name: Simple Deploy to Server
+
+on:
+  workflow_dispatch:
+    inputs:
+      server_name:
+        description: 'Server name'
+        required: true
+        default: 'production-server'
+        type: string
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+
+      - name: Setup pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.23.0 --activate
+
+      - name: Install and build
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Build Docker image
+        run: |
+          docker build -t moltbot:latest .
+
+      - name: Save Docker image
+        run: |
+          docker save moltbot:latest | gzip > moltbot-image.tar.gz
+
+      - name: Deploy to server
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          port: ${{ secrets.SERVER_PORT || 22 }}
+          script: |
+            echo "🚀 开始部署 Moltbot"
+            
+            # 创建临时目录
+            DEPLOY_DIR="/tmp/moltbot-deploy-$(date +%s)"
+            mkdir -p "$DEPLOY_DIR"
+            cd "$DEPLOY_DIR"
+            
+            # 接收镜像文件（通过 scp 传输）
+            echo "等待镜像文件传输..."
+
+      - name: Transfer Docker image
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          port: ${{ secrets.SERVER_PORT || 22 }}
+          source: "moltbot-image.tar.gz"
+          target: "/tmp/"
+
+      - name: Load and run Docker image
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          port: ${{ secrets.SERVER_PORT || 22 }}
+          script: |
+            echo "🚀 加载和运行 Docker 镜像"
+            
+            cd /tmp
+            
+            # 加载镜像
+            echo "加载 Docker 镜像..."
+            docker load < moltbot-image.tar.gz
+            
+            # 停止现有容器
+            echo "停止现有容器..."
+            docker stop moltbot || true
+            docker rm moltbot || true
+            
+            # 创建数据目录
+            echo "创建数据目录..."
+            mkdir -p ~/moltbot-data/.clawdbot
+            
+            # 启动新容器
+            echo "启动新容器..."
+            docker run -d \
+              --name moltbot \
+              --restart unless-stopped \
+              -p 18789:18789 \
+              -v ~/moltbot-data:/home/node/.clawdbot \
+              -e NODE_ENV=production \
+              -e CLAWDBOT_GATEWAY_TOKEN="${{ secrets.PRODUCTION_GATEWAY_TOKEN }}" \
+              -e DEEPSEEK_API_KEY="${{ secrets.PRODUCTION_DEEPSEEK_API_KEY }}" \
+              -e CLAWDBOT_VERSION="$(date +%Y%m%d-%H%M%S)" \
+              moltbot:latest
+            
+            # 等待启动
+            echo "等待应用启动..."
+            sleep 15
+            
+            # 检查容器状态
+            echo "检查容器状态..."
+            docker ps | grep moltbot
+            
+            # 检查日志
+            echo "容器日志："
+            docker logs moltbot --tail 20
+            
+            # 健康检查
+            echo "执行健康检查..."
+            for i in {1..10}; do
+              if curl -f -m 5 http://localhost:18789/health; then
+                echo "✅ 部署成功！健康检查通过"
+                echo "🌐 访问地址: http://${{ secrets.SERVER_HOST }}:18789"
+                
+                # 清理临时文件
+                rm -f /tmp/moltbot-image.tar.gz
+                exit 0
+              else
+                echo "健康检查失败，重试 $i/10..."
+                sleep 3
+              fi
+            done
+            
+            echo "❌ 健康检查失败"
+            echo "容器详细日志："
+            docker logs moltbot
+            exit 1
+
+      - name: Deployment Summary
+        if: success()
+        run: |
+          echo "## 🎉 部署成功" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**服务器**: ${{ github.event.inputs.server_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**部署时间**: $(date)" >> $GITHUB_STEP_SUMMARY
+          echo "**访问地址**: http://${{ secrets.SERVER_HOST }}:18789" >> $GITHUB_STEP_SUMMARY
+          echo "**健康检查**: http://${{ secrets.SERVER_HOST }}:18789/health" >> $GITHUB_STEP_SUMMARY
