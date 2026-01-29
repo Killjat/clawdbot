@@ -1,0 +1,398 @@
+name: Deploy to Custom Server
+
+on:
+  workflow_dispatch:
+    inputs:
+      server_name:
+        description: 'Server name (for identification)'
+        required: true
+        default: 'production-server'
+        type: string
+      deployment_method:
+        description: 'Deployment method'
+        required: true
+        default: 'docker'
+        type: choice
+        options:
+          - docker
+          - docker-compose
+          - direct-install
+          - pm2
+      restart_services:
+        description: 'Restart services after deployment'
+        required: false
+        default: true
+        type: boolean
+
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+
+      - name: Setup pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.23.0 --activate
+
+      - name: Install and build
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate version tag
+        id: version
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            VERSION="custom-$(date +%Y%m%d-%H%M%S)"
+          else
+            VERSION="main-$(git rev-parse --short HEAD)"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "image-tag=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.version.outputs.image-tag }}
+          push: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Deploy via Docker
+        if: github.event.inputs.deployment_method == 'docker' || github.event.inputs.deployment_method == ''
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          port: ${{ secrets.SERVER_PORT || 22 }}
+          script: |
+            echo "🚀 开始 Docker 部署到 ${{ github.event.inputs.server_name || 'production-server' }}"
+            
+            # 登录到 GitHub Container Registry
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.repository_owner }} --password-stdin
+            
+            # 停止现有容器
+            docker stop moltbot || true
+            docker rm moltbot || true
+            
+            # 拉取新镜像
+            docker pull ${{ steps.version.outputs.image-tag }}
+            
+            # 创建数据目录
+            mkdir -p ~/moltbot-data/.clawdbot
+            
+            # 启动新容器
+            docker run -d \
+              --name moltbot \
+              --restart unless-stopped \
+              -p 18789:18789 \
+              -v ~/moltbot-data:/home/node/.clawdbot \
+              -e NODE_ENV=production \
+              -e CLAWDBOT_GATEWAY_TOKEN="${{ secrets.PRODUCTION_GATEWAY_TOKEN }}" \
+              -e DEEPSEEK_API_KEY="${{ secrets.PRODUCTION_DEEPSEEK_API_KEY }}" \
+              -e CLAWDBOT_VERSION="${{ steps.version.outputs.version }}" \
+              ${{ steps.version.outputs.image-tag }}
+            
+            # 等待启动
+            sleep 10
+            
+            # 健康检查
+            if curl -f http://localhost:18789/health; then
+              echo "✅ 部署成功！"
+            else
+              echo "❌ 健康检查失败"
+              docker logs moltbot --tail 50
+              exit 1
+            fi
+
+      - name: Deploy via Docker Compose
+        if: github.event.inputs.deployment_method == 'docker-compose'
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          port: ${{ secrets.SERVER_PORT || 22 }}
+          script: |
+            echo "🚀 开始 Docker Compose 部署"
+            
+            # 创建部署目录
+            mkdir -p ~/moltbot-deploy
+            cd ~/moltbot-deploy
+            
+            # 创建 docker-compose.yml
+            cat > docker-compose.yml << 'EOF'
+            version: '3.8'
+            services:
+              moltbot:
+                image: ${{ steps.version.outputs.image-tag }}
+                container_name: moltbot
+                restart: unless-stopped
+                ports:
+                  - "18789:18789"
+                volumes:
+                  - ./data:/home/node/.clawdbot
+                environment:
+                  - NODE_ENV=production
+                  - CLAWDBOT_GATEWAY_TOKEN=${{ secrets.PRODUCTION_GATEWAY_TOKEN }}
+                  - DEEPSEEK_API_KEY=${{ secrets.PRODUCTION_DEEPSEEK_API_KEY }}
+                  - CLAWDBOT_VERSION=${{ steps.version.outputs.version }}
+                healthcheck:
+                  test: ["CMD", "curl", "-f", "http://localhost:18789/health"]
+                  interval: 30s
+                  timeout: 10s
+                  retries: 3
+            EOF
+            
+            # 登录并部署
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.repository_owner }} --password-stdin
+            docker-compose pull
+            docker-compose up -d
+            
+            # 等待健康检查
+            sleep 30
+            if docker-compose ps | grep -q "healthy\|Up"; then
+              echo "✅ Docker Compose 部署成功！"
+            else
+              echo "❌ 部署失败"
+              docker-compose logs
+              exit 1
+            fi
+
+      - name: Deploy via Direct Install
+        if: github.event.inputs.deployment_method == 'direct-install'
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          port: ${{ secrets.SERVER_PORT || 22 }}
+          script: |
+            echo "🚀 开始直接安装部署"
+            
+            # 安装 Node.js 22 (如果未安装)
+            if ! node --version | grep -q "v22"; then
+              curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+              sudo apt-get install -y nodejs
+            fi
+            
+            # 克隆或更新代码
+            if [ -d "moltbot" ]; then
+              cd moltbot
+              git fetch origin
+              git reset --hard origin/main
+            else
+              git clone https://github.com/${{ github.repository }}.git moltbot
+              cd moltbot
+            fi
+            
+            # 安装依赖和构建
+            corepack enable
+            corepack prepare pnpm@10.23.0 --activate
+            pnpm install --frozen-lockfile
+            pnpm build
+            
+            # 设置环境变量
+            cat > .env.production << EOF
+            NODE_ENV=production
+            CLAWDBOT_GATEWAY_TOKEN=${{ secrets.PRODUCTION_GATEWAY_TOKEN }}
+            DEEPSEEK_API_KEY=${{ secrets.PRODUCTION_DEEPSEEK_API_KEY }}
+            CLAWDBOT_VERSION=${{ steps.version.outputs.version }}
+            EOF
+            
+            # 停止现有进程
+            pkill -f "moltbot gateway" || true
+            
+            # 启动新进程
+            nohup node dist/index.js gateway run --bind lan --port 18789 > ~/moltbot.log 2>&1 &
+            
+            # 等待启动
+            sleep 10
+            
+            # 健康检查
+            if curl -f http://localhost:18789/health; then
+              echo "✅ 直接安装部署成功！"
+            else
+              echo "❌ 健康检查失败"
+              tail -50 ~/moltbot.log
+              exit 1
+            fi
+
+      - name: Deploy via PM2
+        if: github.event.inputs.deployment_method == 'pm2'
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          port: ${{ secrets.SERVER_PORT || 22 }}
+          script: |
+            echo "🚀 开始 PM2 部署"
+            
+            # 安装 PM2 (如果未安装)
+            if ! command -v pm2 &> /dev/null; then
+              npm install -g pm2
+            fi
+            
+            # 克隆或更新代码
+            if [ -d "moltbot" ]; then
+              cd moltbot
+              git fetch origin
+              git reset --hard origin/main
+            else
+              git clone https://github.com/${{ github.repository }}.git moltbot
+              cd moltbot
+            fi
+            
+            # 安装依赖和构建
+            corepack enable
+            corepack prepare pnpm@10.23.0 --activate
+            pnpm install --frozen-lockfile
+            pnpm build
+            
+            # 创建 PM2 配置
+            cat > ecosystem.config.js << 'EOF'
+            module.exports = {
+              apps: [{
+                name: 'moltbot',
+                script: 'dist/index.js',
+                args: 'gateway run --bind lan --port 18789',
+                env: {
+                  NODE_ENV: 'production',
+                  CLAWDBOT_GATEWAY_TOKEN: '${{ secrets.PRODUCTION_GATEWAY_TOKEN }}',
+                  DEEPSEEK_API_KEY: '${{ secrets.PRODUCTION_DEEPSEEK_API_KEY }}',
+                  CLAWDBOT_VERSION: '${{ steps.version.outputs.version }}'
+                },
+                instances: 1,
+                autorestart: true,
+                watch: false,
+                max_memory_restart: '1G',
+                log_file: '~/moltbot-combined.log',
+                out_file: '~/moltbot-out.log',
+                error_file: '~/moltbot-error.log'
+              }]
+            };
+            EOF
+            
+            # 重启 PM2 应用
+            pm2 reload ecosystem.config.js
+            pm2 save
+            
+            # 等待启动
+            sleep 10
+            
+            # 健康检查
+            if curl -f http://localhost:18789/health; then
+              echo "✅ PM2 部署成功！"
+              pm2 status
+            else
+              echo "❌ 健康检查失败"
+              pm2 logs moltbot --lines 50
+              exit 1
+            fi
+
+      - name: Setup Nginx (optional)
+        if: github.event.inputs.restart_services == 'true'
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          port: ${{ secrets.SERVER_PORT || 22 }}
+          script: |
+            # 检查是否需要配置 Nginx
+            if command -v nginx &> /dev/null && [ -n "${{ secrets.DOMAIN_NAME }}" ]; then
+              echo "🔧 配置 Nginx 反向代理"
+              
+              sudo tee /etc/nginx/sites-available/moltbot << 'EOF'
+            server {
+                listen 80;
+                server_name ${{ secrets.DOMAIN_NAME }};
+                
+                location / {
+                    proxy_pass http://localhost:18789;
+                    proxy_http_version 1.1;
+                    proxy_set_header Upgrade $http_upgrade;
+                    proxy_set_header Connection 'upgrade';
+                    proxy_set_header Host $host;
+                    proxy_set_header X-Real-IP $remote_addr;
+                    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                    proxy_set_header X-Forwarded-Proto $scheme;
+                    proxy_cache_bypass $http_upgrade;
+                }
+            }
+            EOF
+              
+              sudo ln -sf /etc/nginx/sites-available/moltbot /etc/nginx/sites-enabled/
+              sudo nginx -t && sudo systemctl reload nginx
+              
+              echo "✅ Nginx 配置完成"
+            fi
+
+      - name: Deployment Summary
+        run: |
+          echo "## 🚀 部署完成" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**服务器**: ${{ github.event.inputs.server_name || 'production-server' }}" >> $GITHUB_STEP_SUMMARY
+          echo "**部署方式**: ${{ github.event.inputs.deployment_method || 'docker' }}" >> $GITHUB_STEP_SUMMARY
+          echo "**镜像版本**: ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**部署时间**: $(date)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 访问地址" >> $GITHUB_STEP_SUMMARY
+          if [ -n "${{ secrets.DOMAIN_NAME }}" ]; then
+            echo "- **域名**: https://${{ secrets.DOMAIN_NAME }}" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "- **IP**: http://${{ secrets.SERVER_HOST }}:18789" >> $GITHUB_STEP_SUMMARY
+          echo "- **健康检查**: http://${{ secrets.SERVER_HOST }}:18789/health" >> $GITHUB_STEP_SUMMARY
+
+  notify-success:
+    needs: build-and-deploy
+    runs-on: ubuntu-latest
+    if: success()
+    steps:
+      - name: Success notification
+        run: |
+          echo "🎉 部署成功完成！"
+          echo "服务器: ${{ github.event.inputs.server_name || 'production-server' }}"
+          echo "访问地址: http://${{ secrets.SERVER_HOST }}:18789"
+
+  notify-failure:
+    needs: build-and-deploy
+    runs-on: ubuntu-latest
+    if: failure()
+    steps:
+      - name: Failure notification
+        run: |
+          echo "❌ 部署失败！"
+          echo "请检查 GitHub Actions 日志获取详细信息"

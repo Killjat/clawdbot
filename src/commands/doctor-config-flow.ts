@@ -124,6 +124,10 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
   const shouldRepair = params.options.repair === true || params.options.yes === true;
   const snapshot = await readConfigFileSnapshot();
   const baseCfg = snapshot.config ?? {};
+
+  // 🔧 PATCH: 保护 TLS 配置不被意外删除
+  const originalTlsConfig = baseCfg.gateway?.tls;
+
   let cfg: MoltbotConfig = baseCfg;
   let candidate = structuredClone(baseCfg) as MoltbotConfig;
   let pendingChanges = false;
@@ -213,6 +217,17 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
   }
 
   noteOpencodeProviderOverrides(cfg);
+
+  // 🔧 PATCH: 确保 TLS 配置被保留
+  if (originalTlsConfig && (!cfg.gateway?.tls || Object.keys(cfg.gateway.tls).length === 0)) {
+    cfg = {
+      ...cfg,
+      gateway: {
+        ...cfg.gateway,
+        tls: originalTlsConfig,
+      },
+    };
+  }
 
   return { cfg, path: snapshot.path ?? CONFIG_PATH, shouldWriteConfig };
 }

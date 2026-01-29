@@ -1,0 +1,28 @@
+{
+  "name": "moltbot-production",
+  "description": "Moltbot AI Assistant - Production Environment",
+  "variables": {
+    "NODE_ENV": "production",
+    "PORT": "8080",
+    "CLAWDBOT_STATE_DIR": "/data/.clawdbot",
+    "CLAWDBOT_WORKSPACE_DIR": "/data/workspace",
+    "CLAWDBOT_PREFER_PNPM": "1"
+  },
+  "secrets": [
+    "CLAWDBOT_GATEWAY_TOKEN",
+    "DEEPSEEK_API_KEY",
+    "SETUP_PASSWORD"
+  ],
+  "healthcheck": {
+    "path": "/health",
+    "timeout": 30
+  },
+  "resources": {
+    "memory": "1GB",
+    "cpu": "1vCPU"
+  },
+  "volume": {
+    "mountPath": "/data",
+    "size": "1GB"
+  }
+}

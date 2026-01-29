@@ -236,6 +236,22 @@ export function createGatewayHttpServer(opts: {
     if (String(req.headers.upgrade ?? "").toLowerCase() === "websocket") return;
 
     try {
+      const url = new URL(req.url ?? "/", `http://localhost`);
+
+      // Health check endpoint for deployment platforms
+      if (url.pathname === "/health") {
+        res.statusCode = 200;
+        res.setHeader("Content-Type", "application/json; charset=utf-8");
+        res.end(
+          JSON.stringify({
+            status: "ok",
+            timestamp: new Date().toISOString(),
+            version: process.env.CLAWDBOT_VERSION ?? process.env.npm_package_version ?? "dev",
+          }),
+        );
+        return;
+      }
+
       const configSnapshot = loadConfig();
       const trustedProxies = configSnapshot.gateway?.trustedProxies ?? [];
       if (await handleHooksRequest(req, res)) return;

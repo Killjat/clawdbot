@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>HTTPS Moltbot 测试</title>
+    <meta charset="utf-8">
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        #messages { border: 1px solid #ccc; height: 300px; overflow-y: scroll; padding: 10px; margin: 10px 0; }
+        #input { width: 70%; padding: 5px; }
+        #send { padding: 5px 10px; }
+        .message { margin: 5px 0; padding: 5px; }
+        .user { background: #e3f2fd; }
+        .bot { background: #f3e5f5; }
+        .status { font-weight: bold; margin: 10px 0; }
+    </style>
+</head>
+<body>
+    <h1>HTTPS Moltbot 网页测试</h1>
+    <div class="status" id="status">连接状态: 未连接</div>
+    <div id="messages"></div>
+    <input type="text" id="input" placeholder="输入消息..." />
+    <button id="send">发送</button>
+    
+    <script>
+        const messages = document.getElementById('messages');
+        const input = document.getElementById('input');
+        const sendBtn = document.getElementById('send');
+        const status = document.getElementById('status');
+        
+        let ws = null;
+        
+        function addMessage(content, isUser = false) {
+            const div = document.createElement('div');
+            div.className = 'message ' + (isUser ? 'user' : 'bot');
+            div.textContent = content;
+            messages.appendChild(div);
+            messages.scrollTop = messages.scrollHeight;
+        }
+        
+        function connect() {
+            // 使用 HTTPS 对应的 WSS 协议
+            const wsUrl = location.protocol === 'https:' ? 
+                'wss://' + location.host : 
+                'ws://' + location.host;
+            
+            addMessage('尝试连接到: ' + wsUrl);
+            ws = new WebSocket(wsUrl);
+            
+            ws.onopen = function() {
+                status.textContent = '连接状态: 已连接 (HTTPS)';
+                status.style.color = 'green';
+                addMessage('✅ HTTPS WebSocket 连接成功！');
+            };
+            
+            ws.onmessage = function(event) {
+                try {
+                    const data = JSON.parse(event.data);
+                    addMessage('📥 ' + JSON.stringify(data, null, 2));
+                } catch (e) {
+                    addMessage('📥 ' + event.data);
+                }
+            };
+            
+            ws.onerror = function(error) {
+                status.textContent = '连接状态: 错误';
+                status.style.color = 'red';
+                addMessage('❌ WebSocket 错误: ' + error.message);
+            };
+            
+            ws.onclose = function(event) {
+                status.textContent = '连接状态: 已断开 (代码: ' + event.code + ')';
+                status.style.color = 'orange';
+                addMessage('🔌 WebSocket 连接关闭: ' + event.reason);
+            };
+        }
+        
+        function sendMessage() {
+            const text = input.value.trim();
+            if (text && ws && ws.readyState === WebSocket.OPEN) {
+                const message = {
+                    type: 'message',
+                    content: text,
+                    timestamp: Date.now()
+                };
+                ws.send(JSON.stringify(message));
+                addMessage('📤 ' + text, true);
+                input.value = '';
+            }
+        }
+        
+        sendBtn.onclick = sendMessage;
+        input.onkeypress = function(e) {
+            if (e.key === 'Enter') {
+                sendMessage();
+            }
+        };
+        
+        // 自动连接
+        connect();
+    </script>
+</body>
+</html>

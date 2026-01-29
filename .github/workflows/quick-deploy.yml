@@ -1,0 +1,104 @@
+name: Quick Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Quick deploy target'
+        required: true
+        type: choice
+        options:
+          - railway-production
+          - railway-staging
+          - fly-production
+          - docker-build-only
+        default: 'railway-production'
+
+jobs:
+  quick-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+
+      - name: Setup pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.23.0 --activate
+
+      - name: Install and build
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build Docker image
+        run: |
+          IMAGE_TAG="ghcr.io/${{ github.repository }}:quick-$(date +%s)"
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+          
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --tag $IMAGE_TAG \
+            --push .
+
+      - name: Deploy to Railway (Production)
+        if: github.event.inputs.target == 'railway-production'
+        run: |
+          curl -fsSL https://railway.app/install.sh | sh
+          export PATH="$HOME/.railway/bin:$PATH"
+          
+          railway login --token ${{ secrets.RAILWAY_TOKEN }}
+          railway variables set DOCKER_IMAGE="$IMAGE_TAG"
+          railway variables set CLAWDBOT_GATEWAY_TOKEN="${{ secrets.PRODUCTION_GATEWAY_TOKEN }}"
+          railway variables set DEEPSEEK_API_KEY="${{ secrets.PRODUCTION_DEEPSEEK_API_KEY }}"
+          railway up --detach
+
+      - name: Deploy to Railway (Staging)
+        if: github.event.inputs.target == 'railway-staging'
+        run: |
+          curl -fsSL https://railway.app/install.sh | sh
+          export PATH="$HOME/.railway/bin:$PATH"
+          
+          railway login --token ${{ secrets.RAILWAY_STAGING_TOKEN }}
+          railway variables set DOCKER_IMAGE="$IMAGE_TAG"
+          railway variables set CLAWDBOT_GATEWAY_TOKEN="${{ secrets.STAGING_GATEWAY_TOKEN }}"
+          railway variables set DEEPSEEK_API_KEY="${{ secrets.STAGING_DEEPSEEK_API_KEY }}"
+          railway up --detach
+
+      - name: Deploy to Fly.io (Production)
+        if: github.event.inputs.target == 'fly-production'
+        run: |
+          curl -L https://fly.io/install.sh | sh
+          export PATH="$HOME/.fly/bin:$PATH"
+          
+          # 更新 fly.toml
+          sed -i "s|image = .*|image = \"$IMAGE_TAG\"|" fly.toml
+          
+          flyctl auth token ${{ secrets.FLY_API_TOKEN }}
+          flyctl secrets set \
+            CLAWDBOT_GATEWAY_TOKEN="${{ secrets.PRODUCTION_GATEWAY_TOKEN }}" \
+            DEEPSEEK_API_KEY="${{ secrets.PRODUCTION_DEEPSEEK_API_KEY }}"
+          flyctl deploy --remote-only
+
+      - name: Summary
+        run: |
+          echo "## 🚀 Quick Deploy Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Target:** ${{ github.event.inputs.target }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Image:** $IMAGE_TAG" >> $GITHUB_STEP_SUMMARY
+          echo "**Time:** $(date)" >> $GITHUB_STEP_SUMMARY
