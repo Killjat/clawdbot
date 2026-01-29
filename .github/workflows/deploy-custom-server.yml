@@ -109,24 +109,16 @@ jobs:
             if ! command -v docker &> /dev/null; then
                 echo "Docker 未安装，开始安装..."
                 
-                # 更新系统包
-                sudo apt-get update
+                # 修复 DNS 问题
+                echo "配置 DNS..."
+                echo "nameserver 8.8.8.8" | sudo tee /etc/resolv.conf.backup > /dev/null
+                echo "nameserver 114.114.114.114" | sudo tee -a /etc/resolv.conf.backup > /dev/null
+                sudo cp /etc/resolv.conf.backup /etc/resolv.conf
                 
-                # 安装必要的包
-                sudo apt-get install -y ca-certificates curl gnupg lsb-release
-                
-                # 添加 Docker 官方 GPG 密钥
-                sudo mkdir -p /etc/apt/keyrings
-                curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-                
-                # 添加 Docker 仓库
-                echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-                
-                # 更新包索引
-                sudo apt-get update
-                
-                # 安装 Docker
-                sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+                # 使用官方安装脚本（更可靠）
+                echo "使用 Docker 官方安装脚本..."
+                curl -fsSL https://get.docker.com -o get-docker.sh
+                sudo sh get-docker.sh
                 
                 # 启动 Docker 服务
                 sudo systemctl start docker
@@ -134,6 +126,9 @@ jobs:
                 
                 # 将当前用户添加到 docker 组
                 sudo usermod -aG docker $USER
+                
+                # 清理安装脚本
+                rm -f get-docker.sh
                 
                 echo "✅ Docker 安装完成"
             else
