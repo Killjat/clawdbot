@@ -32,12 +32,7 @@ ssh -i ~/.ssh/moltbot-deploy user@your-server-ip
 #### 服务器连接
 - **SERVER_HOST**: `你的服务器IP或域名`
 - **SERVER_USER**: `SSH用户名` (如 `root` 或 `ubuntu`)
-- **SERVER_SSH_KEY**: 
-  ```bash
-  # 复制私钥内容
-  cat ~/.ssh/moltbot-deploy
-  # 将完整输出（包括 BEGIN 和 END 行）粘贴到 GitHub Secret
-  ```
+- **SERVER_PASSWORD**: `SSH用户密码`
 
 #### 应用配置
 - **PRODUCTION_GATEWAY_TOKEN**: 

@@ -26,7 +26,7 @@
 |---------|------|------|
 | `SERVER_HOST` | 服务器 IP 地址或域名 | `192.168.1.100` 或 `your-server.com` |
 | `SERVER_USER` | SSH 用户名 | `root` 或 `ubuntu` |
-| `SERVER_SSH_KEY` | SSH 私钥内容 | `-----BEGIN OPENSSH PRIVATE KEY-----...` |
+| `SERVER_PASSWORD` | SSH 用户密码 | `your-server-password` |
 | `SERVER_PORT` | SSH 端口 (可选) | `22` (默认) |
 
 ### 应用配置密钥
